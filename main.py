@@ -16,8 +16,6 @@ import traceback
 
 # Load environment variables
 load_dotenv()
-print("🔐 STRIPE SECRET:", os.getenv("STRIPE_SECRET_KEY"))
-print("🔓 STRIPE PUBLIC:", os.getenv("STRIPE_PUBLIC_KEY"))
 
 # ==================== DATABASE SETUP (WORKING VERSION) ====================
 from database import engine, get_db, Base
