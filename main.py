@@ -367,6 +367,7 @@ async def create_payment_intent(
         intent = stripe.PaymentIntent.create(
             amount=amount_in_cents,
             currency=request.currency.lower(),
+            payment_method_types=["card"],
             metadata={
                 "user_id": str(user_id),
                 "service_id": str(request.service_id),
