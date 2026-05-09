@@ -11,8 +11,8 @@ load_dotenv()
 # Database configuration
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    f"postgresql://{os.getenv('DB_USER', 'postgres')}:{os.getenv('DB_PASSWORD', 'password')}@"
-    f"{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/"
+    f"postgresql://{os.getenv('DB_USER', 'yves')}:{os.getenv('DB_PASSWORD', 'elwg94kBXgrSDcfI2dgwgeyRgJeuEdhv')}@"
+    f"{os.getenv('DB_HOST', 'oregon-postgres.render.com')}:{os.getenv('DB_PORT', '5432')}/"
     f"{os.getenv('DB_NAME', 'akagera_inc')}"
 )
 

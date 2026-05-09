@@ -39,7 +39,7 @@ app = FastAPI(
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://akagerainc.onrender.com", "*"],
+    allow_origins=["https://akagerainc.onrender.com", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,10 +67,10 @@ def get_db_connection():
     """Direct database connection for apps endpoint"""
     try:
         conn = psycopg2.connect(
-            host=os.getenv("DB_HOST", "localhost"),
+            host=os.getenv("DB_HOST", "oregon-postgres.render.com"),
             database=os.getenv("DB_NAME", "akagera_inc"),
-            user=os.getenv("DB_USER", "postgres"),
-            password=os.getenv("DB_PASSWORD", "yves2006"),
+            user=os.getenv("DB_USER", "yves"),
+            password=os.getenv("DB_PASSWORD", "elwg94kBXgrSDcfI2dgwgeyRgJeuEdhv"),
             port=os.getenv("DB_PORT", "5432"),
             cursor_factory=RealDictCursor
         )
@@ -338,6 +338,7 @@ async def create_payment_intent(
     user_id: int = Query(...),
     db: Session = Depends(get_db)
 ):
+    
     stripe_secret = os.getenv("STRIPE_SECRET_KEY")
 
     # ================= VALIDATE STRIPE CONFIG =================
