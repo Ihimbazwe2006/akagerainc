@@ -65,21 +65,12 @@ class MomoPaymentRequest(BaseModel):
     amount: float
     service_id: int
     currency: str = "usd"
+    phone_number: str
 
 
 def get_usd_to_rwf_rate() -> float:
-    try:
-        response = requests.get(
-            "https://api.exchangerate.host/latest",
-            params={"base": "USD", "symbols": "RWF"},
-            timeout=10
-        )
-        response.raise_for_status()
-        rates = response.json().get("rates", {})
-        rate = float(rates.get("RWF", 1300.0))
-        return rate if rate > 0 else 1300.0
-    except Exception:
-        return 1300.0
+    # Fixed conversion rate: 1 USD = 1,462 RWF
+    return 1462.0
 
 
 # ==================== DIRECT DATABASE CONNECTION (FOR APPS) ====================
@@ -459,11 +450,15 @@ async def create_momo_charge(
     if request.amount is None or request.amount <= 0:
         raise HTTPException(status_code=400, detail="Invalid amount")
 
+    if not request.phone_number or not request.phone_number.strip():
+        raise HTTPException(status_code=400, detail="Phone number is required for MoMo payment")
+
     exchange_rate = get_usd_to_rwf_rate()
     amount_rwf = int(round(float(request.amount) * exchange_rate))
 
     payment_payload = {
         "recipient_number": momo_receiver,
+        "payer_number": request.phone_number.strip(),
         "amount": amount_rwf,
         "currency": "RWF",
         "description": f"Payment for {service.name} by {user.email}",

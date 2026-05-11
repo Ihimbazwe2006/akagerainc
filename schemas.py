@@ -128,6 +128,7 @@ class CreateMomoPaymentRequest(BaseModel):
     amount: Decimal
     service_id: int
     currency: str = "USD"
+    phone_number: str
 
 
 class CreateMomoPaymentResponse(BaseModel):
