@@ -124,6 +124,22 @@ class CreatePaymentIntentRequest(BaseModel):
     currency: str = "USD"
 
 
+class CreateMomoPaymentRequest(BaseModel):
+    amount: Decimal
+    service_id: int
+    currency: str = "USD"
+
+
+class CreateMomoPaymentResponse(BaseModel):
+    amount_usd: Decimal
+    amount_rwf: int
+    currency: str
+    momo_number: str
+    status: str
+    reference: Optional[str]
+    message: str
+
+
 class CreatePaymentIntentResponse(BaseModel):
     client_secret: str
     payment_intent_id: str

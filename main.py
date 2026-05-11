@@ -60,6 +60,28 @@ class PaymentIntentRequest(BaseModel):
     service_id: int
     currency: str = "usd"
 
+
+class MomoPaymentRequest(BaseModel):
+    amount: float
+    service_id: int
+    currency: str = "usd"
+
+
+def get_usd_to_rwf_rate() -> float:
+    try:
+        response = requests.get(
+            "https://api.exchangerate.host/latest",
+            params={"base": "USD", "symbols": "RWF"},
+            timeout=10
+        )
+        response.raise_for_status()
+        rates = response.json().get("rates", {})
+        rate = float(rates.get("RWF", 1300.0))
+        return rate if rate > 0 else 1300.0
+    except Exception:
+        return 1300.0
+
+
 # ==================== DIRECT DATABASE CONNECTION (FOR APPS) ====================
 def get_db_connection():
     """Direct database connection for apps endpoint"""
@@ -409,6 +431,85 @@ async def create_payment_intent(
             status_code=500,
             detail=f"Internal payment error: {str(e)}"
         )
+
+@app.post("/api/payments/create-momo-charge")
+async def create_momo_charge(
+    request: MomoPaymentRequest,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    momo_api_url = os.getenv("MOMO_API_URL")
+    momo_api_key = os.getenv("MOMO_API_KEY")
+    momo_receiver = os.getenv("MOMO_RECEIVER_NUMBER", "0795226123")
+
+    if not momo_api_url or not momo_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="MoMo payment processing is not configured. Set MOMO_API_URL and MOMO_API_KEY in environment."
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    service = db.query(Service).filter(Service.id == request.service_id).first()
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    if request.amount is None or request.amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid amount")
+
+    exchange_rate = get_usd_to_rwf_rate()
+    amount_rwf = int(round(float(request.amount) * exchange_rate))
+
+    payment_payload = {
+        "recipient_number": momo_receiver,
+        "amount": amount_rwf,
+        "currency": "RWF",
+        "description": f"Payment for {service.name} by {user.email}",
+        "metadata": {
+            "user_id": str(user_id),
+            "service_id": str(request.service_id),
+            "source": "MoMo"
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {momo_api_key}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(momo_api_url, json=payment_payload, headers=headers, timeout=15)
+        response.raise_for_status()
+        provider_data = response.json() if response.headers.get("Content-Type", "").startswith("application/json") else {}
+        provider_reference = provider_data.get("transaction_id") or provider_data.get("reference") or provider_data.get("id") or ""
+
+        db_payment = Payment(
+            user_id=user_id,
+            amount=request.amount,
+            currency=request.currency,
+            service_id=request.service_id,
+            status="pending",
+            stripe_transaction_id=f"momo:{provider_reference}" if provider_reference else "momo"
+        )
+        db.add(db_payment)
+        db.commit()
+        db.refresh(db_payment)
+
+        return {
+            "status": "pending",
+            "amount_usd": request.amount,
+            "amount_rwf": amount_rwf,
+            "currency": request.currency,
+            "momo_number": momo_receiver,
+            "reference": provider_reference,
+            "message": f"MoMo payment requested for RWF {amount_rwf}. Please complete payment to {momo_receiver}."
+        }
+
+    except requests.RequestException as e:
+        print(f"MoMo payment request failed: {str(e)}")
+        raise HTTPException(status_code=502, detail="Failed to create MoMo payment request. Please try again later.")
 
 @app.post("/api/payments/webhook", tags=["Payments"])
 async def handle_stripe_webhook(request: Request, db: Session = Depends(get_db)):
