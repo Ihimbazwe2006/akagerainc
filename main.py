@@ -567,6 +567,205 @@ async def handle_stripe_webhook(request: Request, db: Session = Depends(get_db))
     
     return {"status": "success", "type": event["type"]}
 
+# ==================== PAYPAL PAYMENT ENDPOINTS ====================
+from paypal_service import paypal_service
+
+@app.post("/api/payments/paypal/create-order", tags=["Payments"])
+async def create_paypal_order(
+    request: PaymentIntentRequest,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a PayPal order
+    Returns PayPal order ID and approval link for client
+    """
+    try:
+        # Validate user
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Validate amount
+        if request.amount is None or request.amount <= 0:
+            raise HTTPException(status_code=400, detail="Invalid amount")
+        
+        # Validate service
+        service = db.query(Service).filter(Service.id == request.service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="Service not found")
+        
+        # Get frontend URL from environment
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        
+        # Create PayPal order
+        success, paypal_response = paypal_service.create_order(
+            amount=str(round(request.amount, 2)),
+            currency=request.currency.upper(),
+            reference_id=f"order-{user_id}-{datetime.utcnow().timestamp()}",
+            description=f"Payment for {service.name}",
+            return_url=f"{frontend_url}/payment-success",
+            cancel_url=f"{frontend_url}/payment-cancel"
+        )
+        
+        if not success:
+            raise HTTPException(status_code=502, detail=paypal_response.get("error", "Failed to create PayPal order"))
+        
+        paypal_order_id = paypal_response.get("id")
+        approval_link = None
+        
+        # Find PayPal approval link
+        for link in paypal_response.get("links", []):
+            if link.get("rel") == "approve":
+                approval_link = link.get("href")
+                break
+        
+        if not approval_link:
+            raise HTTPException(status_code=502, detail="No approval link in PayPal response")
+        
+        # Save payment to database
+        db_payment = Payment(
+            user_id=user_id,
+            amount=request.amount,
+            currency=request.currency,
+            service_id=request.service_id,
+            status="pending",
+            payment_method="paypal",
+            paypal_order_id=paypal_order_id
+        )
+        db.add(db_payment)
+        db.commit()
+        db.refresh(db_payment)
+        
+        return {
+            "success": True,
+            "paypal_order_id": paypal_order_id,
+            "approval_url": approval_link,
+            "status": "pending",
+            "amount": request.amount,
+            "currency": request.currency
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"PayPal order creation error: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@app.post("/api/payments/paypal/capture-order", tags=["Payments"])
+async def capture_paypal_order(
+    paypal_order_id: str = Query(...),
+    user_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Capture (complete) a PayPal order after user approval
+    Generates license if service requires it
+    """
+    try:
+        # Validate user
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Find payment by PayPal order ID
+        payment = db.query(Payment).filter(
+            Payment.paypal_order_id == paypal_order_id,
+            Payment.user_id == user_id
+        ).first()
+        
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        
+        # Capture PayPal order
+        success, paypal_response = paypal_service.capture_order(paypal_order_id)
+        
+        if not success:
+            payment.status = "failed"
+            db.commit()
+            raise HTTPException(status_code=502, detail=paypal_response.get("error", "Failed to capture PayPal order"))
+        
+        # Check if capture was successful
+        status = paypal_response.get("status", "").upper()
+        if status != "COMPLETED":
+            payment.status = "failed"
+            db.commit()
+            raise HTTPException(status_code=402, detail=f"PayPal order not completed. Status: {status}")
+        
+        # Update payment status
+        payment.status = "completed"
+        db.commit()
+        db.refresh(payment)
+        
+        # Generate license if service requires it
+        if payment.service_id:
+            service = db.query(Service).filter(Service.id == payment.service_id).first()
+            if service:
+                license_key = generate_license_key()
+                db_license = License(
+                    user_id=user_id,
+                    license_key=license_key,
+                    service_id=payment.service_id,
+                    is_active=True,
+                    expires_at=datetime.utcnow() + timedelta(days=365)
+                )
+                db.add(db_license)
+                db.commit()
+                db.refresh(db_license)
+                print(f"License generated for payment {payment.id}: {license_key}")
+        
+        return {
+            "success": True,
+            "status": "completed",
+            "payment_id": payment.id,
+            "message": "Payment completed successfully"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"PayPal order capture error: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@app.get("/api/payments/paypal/details/{paypal_order_id}", tags=["Payments"])
+async def get_paypal_order_details(
+    paypal_order_id: str,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get details of a PayPal order"""
+    try:
+        # Verify payment exists for user
+        payment = db.query(Payment).filter(
+            Payment.paypal_order_id == paypal_order_id,
+            Payment.user_id == user_id
+        ).first()
+        
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        
+        # Get order details from PayPal
+        success, paypal_response = paypal_service.get_order_details(paypal_order_id)
+        
+        if not success:
+            raise HTTPException(status_code=502, detail=paypal_response.get("error", "Failed to get PayPal order details"))
+        
+        return {
+            "success": True,
+            "paypal_order": paypal_response,
+            "payment_status": payment.status
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"PayPal order details error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
 @app.get("/api/payments/user/{user_id}", response_model=list[schemas.PaymentResponse], tags=["Payments"])
 async def get_user_payments(user_id: int, db: Session = Depends(get_db)):
     """Get all payments for a user"""
