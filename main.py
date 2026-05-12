@@ -37,7 +37,13 @@ app = FastAPI(
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://akagerainc.onrender.com", "*"],
+    allow_origins=[
+        "https://akagerainc.store",
+        "https://akagerainc.onrender.com",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "*"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
