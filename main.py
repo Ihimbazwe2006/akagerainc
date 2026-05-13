@@ -1,7 +1,7 @@
 import requests
 import uuid
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Query, Form, Request, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,12 +70,13 @@ ITEC_API_KEY = os.getenv("ITEC_API_KEY", "")  # Set your Akagera Inc ITEC API ke
 USD_TO_RWF = 1466.52
 
 # Initiate MoMo Payment (ITEC)
+# Add these Pydantic models at the top of your file (after other models)
 class CardPaymentRequest(BaseModel):
     amount: float
     service_id: int
     currency: str = "USD"
     user_id: int
-    email: str = None  # Make email optional
+    email: str = None
 
 class MomoPaymentRequest(BaseModel):
     amount: float
@@ -83,6 +84,8 @@ class MomoPaymentRequest(BaseModel):
     currency: str = "USD"
     user_id: int
     phone_number: str
+
+# Replace your existing initiate-momo endpoint with this
 @app.post("/api/payments/initiate-momo")
 async def initiate_momo_payment(
     request: MomoPaymentRequest,
@@ -110,40 +113,52 @@ async def initiate_momo_payment(
     }
     
     try:
-        resp = requests.post(ITEC_MOMO_API_URL, json=payload, timeout=15)
-        data = resp.json()
-        status_code = data.get("status")
+        print(f"Sending MoMo payment request: {payload}")
+        resp = requests.post(ITEC_MOMO_API_URL, json=payload, timeout=30)
+        print(f"MoMo API Response Status: {resp.status_code}")
+        print(f"MoMo API Response Body: {resp.text}")
         
-        if status_code == 200:
-            # Save payment as pending
-            db_payment = Payment(
-                user_id=request.user_id,
-                amount=request.amount,
-                currency=request.currency,
-                service_id=request.service_id,
-                status="pending",
-                payment_method="momo",
-                stripe_transaction_id=req_ref
-            )
-            db.add(db_payment)
-            db.commit()
-            db.refresh(db_payment)
+        if resp.status_code == 200:
+            data = resp.json()
+            status_code = data.get("status")
             
-            return {
-                "success": True, 
-                "req_ref": req_ref, 
-                "amount_rwf": amount_rwf, 
-                "momo_reference": data.get("data", {}).get("transaction_id"),
-                "message": "MoMo payment initiated. Awaiting confirmation."
-            }
+            if status_code == 200:
+                # Save payment as pending
+                db_payment = Payment(
+                    user_id=request.user_id,
+                    amount=request.amount,
+                    currency=request.currency,
+                    service_id=request.service_id,
+                    status="pending",
+                    payment_method="momo",
+                    stripe_transaction_id=req_ref
+                )
+                db.add(db_payment)
+                db.commit()
+                db.refresh(db_payment)
+                
+                return {
+                    "success": True, 
+                    "req_ref": req_ref, 
+                    "amount_rwf": amount_rwf, 
+                    "momo_reference": data.get("data", {}).get("transaction_id"),
+                    "message": "MoMo payment initiated. Awaiting confirmation."
+                }
+            else:
+                error_msg = data.get("data", {}).get("message", "MoMo payment failed.")
+                return {"success": False, "error": error_msg}
         else:
-            error_msg = data.get("data", {}).get("message", "MoMo payment failed.")
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": f"ITEC API returned status {resp.status_code}: {resp.text}"}
+            
+    except requests.exceptions.Timeout:
+        print("MoMo payment request timed out")
+        return {"success": False, "error": "Request timed out. Please try again."}
     except Exception as e:
         print(f"MoMo payment error: {str(e)}")
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-# Initiate Card Payment (ITEC)
+# Replace your existing initiate-card endpoint with this
 @app.post("/api/payments/initiate-card")
 async def initiate_card_payment(
     request: CardPaymentRequest,
@@ -152,7 +167,6 @@ async def initiate_card_payment(
     if not ITEC_API_KEY:
         raise HTTPException(status_code=500, detail="ITEC API key not configured.")
     
-    # Get user and service
     user = db.query(User).filter(User.id == request.user_id).first()
     service = db.query(Service).filter(Service.id == request.service_id).first()
     
@@ -170,36 +184,50 @@ async def initiate_card_payment(
     }
     
     try:
-        resp = requests.post(ITEC_CARD_API_URL, json=payload, timeout=15)
-        data = resp.json()
+        print(f"Sending card payment request: {payload}")
+        resp = requests.post(ITEC_CARD_API_URL, json=payload, timeout=30)
+        print(f"Card API Response Status: {resp.status_code}")
+        print(f"Card API Response Body: {resp.text}")
         
-        if data.get("status") == 200 and data.get("link"):
-            # Save payment as pending
-            db_payment = Payment(
-                user_id=request.user_id,
-                amount=request.amount,
-                currency=request.currency,
-                service_id=request.service_id,
-                status="pending",
-                payment_method="card",
-                stripe_transaction_id=data.get("PCODE")
-            )
-            db.add(db_payment)
-            db.commit()
-            db.refresh(db_payment)
+        if resp.status_code == 200:
+            data = resp.json()
             
-            return {
-                "success": True, 
-                "payment_url": data["link"], 
-                "payment_id": data.get("PCODE"), 
-                "amount_rwf": amount_rwf
-            }
+            if data.get("status") == 200 and data.get("link"):
+                # Save payment as pending
+                db_payment = Payment(
+                    user_id=request.user_id,
+                    amount=request.amount,
+                    currency=request.currency,
+                    service_id=request.service_id,
+                    status="pending",
+                    payment_method="card",
+                    stripe_transaction_id=data.get("PCODE")
+                )
+                db.add(db_payment)
+                db.commit()
+                db.refresh(db_payment)
+                
+                return {
+                    "success": True, 
+                    "payment_url": data["link"], 
+                    "payment_id": data.get("PCODE"), 
+                    "amount_rwf": amount_rwf
+                }
+            else:
+                error_msg = data.get("message", "Card payment failed.")
+                return {"success": False, "error": error_msg}
         else:
-            return {"success": False, "error": data.get("message", "Card payment failed.")}
+            return {"success": False, "error": f"ITEC API returned status {resp.status_code}: {resp.text}"}
+            
+    except requests.exceptions.Timeout:
+        print("Card payment request timed out")
+        return {"success": False, "error": "Request timed out. Please try again."}
     except Exception as e:
         print(f"Card payment error: {str(e)}")
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
+# Initiate Card Payment (ITEC)
 # Verify Payment Status (ITEC)
 @app.post("/api/payments/status")
 async def verify_payment_status(
@@ -225,6 +253,186 @@ async def verify_payment_status(
         return {"success": True, "status": status}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# Add these new Pydantic models
+
+class CardPaymentCallback(BaseModel):
+    PCODE: str
+    amount: str
+    transID: str
+
+# Add this endpoint for card payment
+# Update your CardPaymentRequest model
+class CardPaymentRequest(BaseModel):
+    amount: float
+    service_id: int
+    currency: str = "USD"
+    user_id: int
+    email: str
+
+@app.post("/api/payments/initiate-card")
+async def initiate_card_payment(
+    request: CardPaymentRequest,
+    db: Session = Depends(get_db)
+):
+    """Initiate card payment with ITEC API"""
+    if not ITEC_API_KEY:
+        raise HTTPException(status_code=500, detail="ITEC API key not configured.")
+    
+    # Validate user
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Validate service
+    service = db.query(Service).filter(Service.id == request.service_id).first()
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    
+    # Convert USD to RWF
+    amount_rwf = int(round(request.amount * USD_TO_RWF))
+    
+    # Prepare payload for ITEC API - ONLY amount, email, and key
+    payload = {
+        "amount": amount_rwf,
+        "email": request.email,
+        "key": ITEC_API_KEY  # Make sure this is your CARD API key, not MOMO key
+    }
+    
+    print(f"Card payment request - Amount RWF: {amount_rwf}, Email: {request.email}")
+    print(f"Payload being sent: {payload}")
+    
+    try:
+        # Call ITEC card payment API
+        resp = requests.post(
+            ITEC_CARD_API_URL,  # This should be https://pay.itecpay.rw/api/pay/apis/pesapal/generatecode
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        
+        print(f"ITEC Response Status: {resp.status_code}")
+        print(f"ITEC Response Body: {resp.text}")
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            
+            # Check if we got a valid PCODE and link
+            if data.get("status") == 200 and data.get("link"):
+                # Save payment to database
+                db_payment = Payment(
+                    user_id=request.user_id,
+                    amount=request.amount,
+                    currency=request.currency,
+                    service_id=request.service_id,
+                    status="pending",
+                    payment_method="card",
+                    stripe_transaction_id=data.get("PCODE")
+                )
+                db.add(db_payment)
+                db.commit()
+                db.refresh(db_payment)
+                
+                return {
+                    "success": True,
+                    "payment_url": data["link"],
+                    "payment_id": data.get("PCODE"),
+                    "amount_rwf": amount_rwf,
+                    "valid_until": data.get("valid_until"),
+                    "message": "Card payment initiated successfully"
+                }
+            else:
+                error_msg = data.get("message", "Card payment initiation failed")
+                return {"success": False, "error": error_msg}
+        else:
+            return {"success": False, "error": f"ITEC API error: {resp.status_code} - {resp.text}"}
+            
+    except requests.exceptions.Timeout:
+        print("Card payment request timed out")
+        return {"success": False, "error": "Request timed out. Please try again."}
+    except Exception as e:
+        print(f"Card payment error: {str(e)}")
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+# Add callback endpoint for ITEC to notify payment status
+@app.post("/api/payments/card-callback")
+async def handle_card_callback(
+    request: CardPaymentCallback,
+    db: Session = Depends(get_db)
+):
+    """Handle ITEC card payment callback"""
+    try:
+        print(f"Received card callback: PCODE={request.PCODE}, transID={request.transID}, amount={request.amount}")
+        
+        # Find payment by transaction ID
+        payment = db.query(Payment).filter(
+            Payment.stripe_transaction_id == request.PCODE
+        ).first()
+        
+        if not payment:
+            print(f"Payment not found for PCODE: {request.PCODE}")
+            return {"status": "error", "message": "Payment not found"}
+        
+        # Update payment status to completed
+        payment.status = "completed"
+        payment.transaction_id = request.transID
+        db.commit()
+        
+        # Generate license if service requires it
+        if payment.service_id:
+            service = db.query(Service).filter(Service.id == payment.service_id).first()
+            if service:
+                license_key = generate_license_key()
+                db_license = License(
+                    user_id=payment.user_id,
+                    license_key=license_key,
+                    service_id=payment.service_id,
+                    is_active=True,
+                    expires_at=datetime.utcnow() + timedelta(days=365)
+                )
+                db.add(db_license)
+                db.commit()
+                print(f"License generated: {license_key} for user {payment.user_id}")
+        
+        return {"status": "success", "message": "Payment callback processed"}
+        
+    except Exception as e:
+        print(f"Callback error: {str(e)}")
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+# Add endpoint to check payment status
+@app.get("/api/payments/card-status/{payment_id}")
+async def check_card_payment_status(
+    payment_id: str,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Check status of a card payment"""
+    try:
+        payment = db.query(Payment).filter(
+            Payment.stripe_transaction_id == payment_id,
+            Payment.user_id == user_id
+        ).first()
+        
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        
+        return {
+            "status": payment.status,
+            "amount": payment.amount,
+            "currency": payment.currency,
+            "payment_method": payment.payment_method,
+            "created_at": payment.created_at.isoformat() if payment.created_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Status check error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== DIRECT DATABASE CONNECTION (FOR APPS) ====================
 def get_db_connection():
