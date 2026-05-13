@@ -71,12 +71,6 @@ USD_TO_RWF = 1466.52
 
 # Initiate MoMo Payment (ITEC)
 # Add these Pydantic models at the top of your file (after other models)
-class CardPaymentRequest(BaseModel):
-    amount: float
-    service_id: int
-    currency: str = "USD"
-    user_id: int
-    email: str = None
 
 class MomoPaymentRequest(BaseModel):
     amount: float
@@ -159,75 +153,8 @@ async def initiate_momo_payment(
         return {"success": False, "error": str(e)}
 
 # Replace your existing initiate-card endpoint with this
-@app.post("/api/payments/initiate-card")
-async def initiate_card_payment(
-    request: CardPaymentRequest,
-    db: Session = Depends(get_db)
-):
-    if not ITEC_API_KEY:
-        raise HTTPException(status_code=500, detail="ITEC API key not configured.")
-    
-    user = db.query(User).filter(User.id == request.user_id).first()
-    service = db.query(Service).filter(Service.id == request.service_id).first()
-    
-    if not user or not service:
-        raise HTTPException(status_code=404, detail="User or service not found.")
-    
-    # Use email from request or fallback to user's email
-    email = request.email or user.email
-    
-    amount_rwf = int(round(request.amount * USD_TO_RWF))
-    payload = {
-        "amount": amount_rwf,
-        "email": email,
-        "key": ITEC_API_KEY
-    }
-    
-    try:
-        print(f"Sending card payment request: {payload}")
-        resp = requests.post(ITEC_CARD_API_URL, json=payload, timeout=30)
-        print(f"Card API Response Status: {resp.status_code}")
-        print(f"Card API Response Body: {resp.text}")
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            
-            if data.get("status") == 200 and data.get("link"):
-                # Save payment as pending
-                db_payment = Payment(
-                    user_id=request.user_id,
-                    amount=request.amount,
-                    currency=request.currency,
-                    service_id=request.service_id,
-                    status="pending",
-                    payment_method="card",
-                    stripe_transaction_id=data.get("PCODE")
-                )
-                db.add(db_payment)
-                db.commit()
-                db.refresh(db_payment)
-                
-                return {
-                    "success": True, 
-                    "payment_url": data["link"], 
-                    "payment_id": data.get("PCODE"), 
-                    "amount_rwf": amount_rwf
-                }
-            else:
-                error_msg = data.get("message", "Card payment failed.")
-                return {"success": False, "error": error_msg}
-        else:
-            return {"success": False, "error": f"ITEC API returned status {resp.status_code}: {resp.text}"}
-            
-    except requests.exceptions.Timeout:
-        print("Card payment request timed out")
-        return {"success": False, "error": "Request timed out. Please try again."}
-    except Exception as e:
-        print(f"Card payment error: {str(e)}")
-        traceback.print_exc()
-        return {"success": False, "error": str(e)}
 
-# Initiate Card Payment (ITEC)
+    
 # Verify Payment Status (ITEC)
 @app.post("/api/payments/status")
 async def verify_payment_status(
