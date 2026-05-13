@@ -1,3 +1,133 @@
+import requests
+import uuid
+# ITEC/AKAGERA INC PAYMENT ENDPOINTS
+
+ITEC_MOMO_API_URL = "https://pay.itecpay.rw/api2/pay"
+ITEC_CARD_API_URL = "https://pay.itecpay.rw/api/pay/apis/pesapal/generatecode"
+ITEC_VERIFY_API_URL = "https://pay.itecpay.rw/api2/verify"
+ITEC_API_KEY = os.getenv("ITEC_API_KEY", "")  # Set your Akagera Inc ITEC API key in env
+
+# USD to RWF conversion
+USD_TO_RWF = 1466.52
+
+# Initiate MoMo Payment (ITEC)
+@app.post("/api/payments/initiate-momo")
+async def initiate_momo_payment(
+    user_id: int = Query(...),
+    service_id: int = Query(...),
+    amount_usd: float = Query(...),
+    phone: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    if not ITEC_API_KEY:
+        raise HTTPException(status_code=500, detail="ITEC API key not configured.")
+    user = db.query(User).filter(User.id == user_id).first()
+    service = db.query(Service).filter(Service.id == service_id).first()
+    if not user or not service:
+        raise HTTPException(status_code=404, detail="User or service not found.")
+    amount_rwf = int(round(amount_usd * USD_TO_RWF))
+    req_ref = str(uuid.uuid4())
+    payload = {
+        "amount": amount_rwf,
+        "phone": phone,
+        "key": ITEC_API_KEY,
+        "req_ref": req_ref,
+        "note": f"AkageraInc Service {service_id}",
+        "message": f"Payment for {service.name} by {user.email}"
+    }
+    try:
+        resp = requests.post(ITEC_MOMO_API_URL, json=payload, timeout=15)
+        data = resp.json()
+        status_code = data.get("status")
+        if status_code == 200:
+            # Save payment as pending
+            db_payment = Payment(
+                user_id=user_id,
+                amount=amount_usd,
+                currency="USD",
+                service_id=service_id,
+                status="pending",
+                payment_method="momo",
+                stripe_transaction_id=req_ref
+            )
+            db.add(db_payment)
+            db.commit()
+            db.refresh(db_payment)
+            return {"success": True, "req_ref": req_ref, "amount_rwf": amount_rwf, "message": "MoMo payment initiated. Awaiting confirmation."}
+        else:
+            return {"success": False, "error": data.get("data", {}).get("message", "MoMo payment failed.")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# Initiate Card Payment (ITEC)
+@app.post("/api/payments/initiate-card")
+async def initiate_card_payment(
+    user_id: int = Query(...),
+    service_id: int = Query(...),
+    amount_usd: float = Query(...),
+    email: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    if not ITEC_API_KEY:
+        raise HTTPException(status_code=500, detail="ITEC API key not configured.")
+    user = db.query(User).filter(User.id == user_id).first()
+    service = db.query(Service).filter(Service.id == service_id).first()
+    if not user or not service:
+        raise HTTPException(status_code=404, detail="User or service not found.")
+    amount_rwf = int(round(amount_usd * USD_TO_RWF))
+    payload = {
+        "amount": amount_rwf,
+        "email": email,
+        "key": ITEC_API_KEY
+    }
+    try:
+        resp = requests.post(ITEC_CARD_API_URL, json=payload, timeout=15)
+        data = resp.json()
+        if data.get("status") == 200 and data.get("link"):
+            # Save payment as pending
+            db_payment = Payment(
+                user_id=user_id,
+                amount=amount_usd,
+                currency="USD",
+                service_id=service_id,
+                status="pending",
+                payment_method="card",
+                stripe_transaction_id=data.get("PCODE")
+            )
+            db.add(db_payment)
+            db.commit()
+            db.refresh(db_payment)
+            return {"success": True, "link": data["link"], "PCODE": data["PCODE"], "amount_rwf": amount_rwf}
+        else:
+            return {"success": False, "error": data.get("message", "Card payment failed.")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# Verify Payment Status (ITEC)
+@app.post("/api/payments/status")
+async def verify_payment_status(
+    req_ref: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    if not ITEC_API_KEY:
+        raise HTTPException(status_code=500, detail="ITEC API key not configured.")
+    payload = {
+        "action": "status_check",
+        "req_ref": req_ref,
+        "key": ITEC_API_KEY
+    }
+    try:
+        resp = requests.post(ITEC_VERIFY_API_URL, json=payload, timeout=15)
+        data = resp.json()
+        status = data.get("data", {}).get("status")
+        # Update payment status in DB
+        db_payment = db.query(Payment).filter(Payment.stripe_transaction_id == req_ref).first()
+        if db_payment and status:
+            db_payment.status = status.lower()
+            db.commit()
+        return {"success": True, "status": status}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 from fastapi import FastAPI, Depends, HTTPException, Request, status, Form, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -57,7 +187,6 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Include admin router
 app.include_router(admin_router)
-
 
 #=======payment
 

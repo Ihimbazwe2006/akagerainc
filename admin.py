@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import User, App, Service, Payment, License, Image
 import hashlib
+import uuid
 
 # Admin router
 admin_router = APIRouter(prefix="/api/admin-xyz789-control", tags=["Admin"])
