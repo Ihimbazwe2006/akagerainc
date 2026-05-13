@@ -1,7 +1,66 @@
 import requests
 import uuid
-# ITEC/AKAGERA INC PAYMENT ENDPOINTS
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Depends, Query, Form, Request, status, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
+from database import get_db
+import json
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from typing import List, Optional
+import stripe
+from pydantic import BaseModel
+import traceback
 
+# Load environment variables
+load_dotenv()
+
+# ==================== DATABASE SETUP (WORKING VERSION) ====================
+from database import engine, get_db, Base
+from models import User, App, Service, Payment, License
+import schemas
+from utils import generate_license_key
+from admin import admin_router
+
+# Create tables
+Base.metadata.create_all(bind=engine)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Akagera Inc API",
+    description="Smart Mobile Solutions API",
+    version="1.0.0"
+)
+
+# CORS middleware configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://akagerainc.store",
+        "https://akagerainc.onrender.com",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "*"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create uploads directory if it doesn't exist
+os.makedirs("uploads", exist_ok=True)
+
+# Mount static files
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+# Include admin router
+app.include_router(admin_router)
+
+# ITEC/AKAGERA INC PAYMENT ENDPOINTS
 ITEC_MOMO_API_URL = "https://pay.itecpay.rw/api2/pay"
 ITEC_CARD_API_URL = "https://pay.itecpay.rw/api/pay/apis/pesapal/generatecode"
 ITEC_VERIFY_API_URL = "https://pay.itecpay.rw/api2/verify"
@@ -128,85 +187,6 @@ async def verify_payment_status(
         return {"success": True, "status": status}
     except Exception as e:
         return {"success": False, "error": str(e)}
-from fastapi import FastAPI, Depends, HTTPException, Request, status, Form, UploadFile, File, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
-from dotenv import load_dotenv
-import os
-from datetime import datetime, timedelta
-import json
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from typing import List, Optional
-import stripe
-from pydantic import BaseModel
-import traceback
-
-
-# Load environment variables
-load_dotenv()
-
-# ==================== DATABASE SETUP (WORKING VERSION) ====================
-from database import engine, get_db, Base
-from models import User, App, Service, Payment, License
-import schemas
-from utils import generate_license_key
-from admin import admin_router
-
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-# Initialize FastAPI app
-app = FastAPI(
-    title="Akagera Inc API",
-    description="Smart Mobile Solutions API",
-    version="1.0.0"
-)
-
-# CORS middleware configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://akagerainc.store",
-        "https://akagerainc.onrender.com",
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "*"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
- 
-# Create uploads directory if it doesn't exist
-os.makedirs("uploads", exist_ok=True)
-
-# Mount static files
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-# Include admin router
-app.include_router(admin_router)
-
-#=======payment
-
-class PaymentIntentRequest(BaseModel):
-    amount: float
-    service_id: int
-    currency: str = "usd"
-
-
-class MomoPaymentRequest(BaseModel):
-    amount: float
-    service_id: int
-    currency: str = "usd"
-    phone_number: str
-
-
-def get_usd_to_rwf_rate() -> float:
-    # Fixed conversion rate: 1 USD = 1,462 RWF
-    return 1462.0
-
 
 # ==================== DIRECT DATABASE CONNECTION (FOR APPS) ====================
 def get_db_connection():
@@ -259,9 +239,9 @@ async def list_apps():
         conn.close()
         
         result = []
-        for app in apps_data:
+        for app_data in apps_data:
             # Parse features if it's JSON string
-            features = app.get('features')
+            features = app_data.get('features')
             if features and isinstance(features, str):
                 try:
                     features = json.loads(features)
@@ -271,7 +251,7 @@ async def list_apps():
                 features = []
             
             # Parse installation steps if it's JSON string
-            installation_steps = app.get('installation_steps')
+            installation_steps = app_data.get('installation_steps')
             if installation_steps and isinstance(installation_steps, str):
                 try:
                     installation_steps = json.loads(installation_steps)
@@ -281,20 +261,20 @@ async def list_apps():
                 installation_steps = []
             
             result.append({
-                "id": app.get('id'),
-                "name": app.get('name'),
-                "description": app.get('description'),
-                "short_description": app.get('short_description'),
-                "requires_license": app.get('requires_license', False),
+                "id": app_data.get('id'),
+                "name": app_data.get('name'),
+                "description": app_data.get('description'),
+                "short_description": app_data.get('short_description'),
+                "requires_license": app_data.get('requires_license', False),
                 "features": features,
-                "how_it_works": app.get('how_it_works'),
+                "how_it_works": app_data.get('how_it_works'),
                 "installation_steps": installation_steps,
-                "download_url": app.get('download_url'),
-                "app_icon": app.get('app_icon'),
-                "app_logo": app.get('app_logo'),
-                "app_image": app.get('app_image'),
-                "created_at": app.get('created_at').isoformat() if app.get('created_at') else None,
-                "updated_at": app.get('updated_at').isoformat() if app.get('updated_at') else None
+                "download_url": app_data.get('download_url'),
+                "app_icon": app_data.get('app_icon'),
+                "app_logo": app_data.get('app_logo'),
+                "app_image": app_data.get('app_image'),
+                "created_at": app_data.get('created_at').isoformat() if app_data.get('created_at') else None,
+                "updated_at": app_data.get('updated_at').isoformat() if app_data.get('updated_at') else None
             })
         
         print(f"✅ Returning {len(result)} apps")
@@ -324,15 +304,15 @@ async def get_app(app_id: int):
             WHERE id = %s
         """, (app_id,))
         
-        app = cursor.fetchone()
+        app_data = cursor.fetchone()
         cursor.close()
         conn.close()
         
-        if not app:
+        if not app_data:
             raise HTTPException(status_code=404, detail="App not found")
         
         # Parse JSON fields
-        features = app.get('features')
+        features = app_data.get('features')
         if features and isinstance(features, str):
             try:
                 features = json.loads(features)
@@ -341,7 +321,7 @@ async def get_app(app_id: int):
         elif not features:
             features = []
         
-        installation_steps = app.get('installation_steps')
+        installation_steps = app_data.get('installation_steps')
         if installation_steps and isinstance(installation_steps, str):
             try:
                 installation_steps = json.loads(installation_steps)
@@ -351,20 +331,20 @@ async def get_app(app_id: int):
             installation_steps = []
         
         return {
-            "id": app.get('id'),
-            "name": app.get('name'),
-            "description": app.get('description'),
-            "short_description": app.get('short_description'),
-            "requires_license": app.get('requires_license', False),
+            "id": app_data.get('id'),
+            "name": app_data.get('name'),
+            "description": app_data.get('description'),
+            "short_description": app_data.get('short_description'),
+            "requires_license": app_data.get('requires_license', False),
             "features": features,
-            "how_it_works": app.get('how_it_works'),
+            "how_it_works": app_data.get('how_it_works'),
             "installation_steps": installation_steps,
-            "download_url": app.get('download_url'),
-            "app_icon": app.get('app_icon'),
-            "app_logo": app.get('app_logo'),
-            "app_image": app.get('app_image'),
-            "created_at": app.get('created_at').isoformat() if app.get('created_at') else None,
-            "updated_at": app.get('updated_at').isoformat() if app.get('updated_at') else None
+            "download_url": app_data.get('download_url'),
+            "app_icon": app_data.get('app_icon'),
+            "app_logo": app_data.get('app_logo'),
+            "app_image": app_data.get('app_image'),
+            "created_at": app_data.get('created_at').isoformat() if app_data.get('created_at') else None,
+            "updated_at": app_data.get('updated_at').isoformat() if app_data.get('updated_at') else None
         }
         
     except HTTPException:
@@ -478,6 +458,24 @@ async def get_service(service_id: int, db: Session = Depends(get_db)):
     return service
 
 # ==================== PAYMENTS ====================
+class PaymentIntentRequest(BaseModel):
+    amount: float
+    service_id: int
+    currency: str = "usd"
+
+
+class MomoPaymentRequest(BaseModel):
+    amount: float
+    service_id: int
+    currency: str = "usd"
+    phone_number: str
+
+
+def get_usd_to_rwf_rate() -> float:
+    # Fixed conversion rate: 1 USD = 1,462 RWF
+    return 1462.0
+
+
 @app.post("/api/payments/create-intent")
 async def create_payment_intent(
     request: PaymentIntentRequest,
